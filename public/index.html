@@ -1,0 +1,1181 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <title>Quest Screen Capture</title>
+    <style>
+      video {
+        position: absolute;
+        left: 0px;
+        top: 0px;
+        z-index: -10;
+      }
+      canvas {
+        position: absolute;
+        left: 0px;
+        top: 0px;
+        z-index: -10;
+      }
+      #uploadButton {
+        position: absolute;
+        z-index: 10; /* This z-index should be higher than that of other elements you want the button to be on top of */
+        bottom: 50px; /* Adjust this value to position the button where you want it on the screen */
+        right: 50px; /* Adjust this value to position the button where you want it on the screen */
+        padding: 10px;
+        background-color: #fff; /* Make it stand out against potentially complex backgrounds */
+      }
+      .box {
+        background: rgba(0, 255, 0, 0.25);
+        border: 1px dashed #fff;
+        z-index: 1;
+        position: absolute;
+      }
+      .label {
+        position: absolute;
+        background-color: #007f8b;
+        color: #fff;
+        z-index: 2;
+        margin: 0;
+      }
+    </style>
+    <script
+      type="modele"
+      src="https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision/vision_bundle.js"
+      crossorigin="anonymous"
+    ></script>
+    <script src="https://cdn.jsdelivr.net/npm/peerjs/dist/peerjs.min.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/8.0.0/firebase-app.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/8.0.0/firebase-storage.js"></script>
+  </head>
+  <body>
+    <!--     <input type="file" id="file" style="z-index: 10; position: absolute; bottom: 100px; right: 50px;"> -->
+    <button id="uploadButton">Stop Uploading and Calling</button>
+    <button id="previousButton">Previous</button>
+    <button id="nextButton">Next</button>
+
+    <!-- Recording Controls -->
+    <div>
+      <button id="startRecord">Start Recording</button>
+      <button id="stopRecord" disabled>Stop Recording</button>
+      <span id="recordingTimer">00:00</span>
+      <!-- Timer Display -->
+    </div>
+
+    <!-- Audio Player for Recorded Audio -->
+    <div>
+      <audio id="audioPlayer" controls></audio>
+    </div>
+
+    <!-- Upload Audio File -->
+    <div>
+      <input type="file" id="audioUpload" accept="audio/*" />
+    </div>
+
+    <!-- Transcribe Button -->
+    <div>
+      <button id="transcribeButton">Transcribe</button>
+    </div>
+    <h2>Upload Image for Analysis</h2>
+    <div>
+      <input type="file" id="imageUpload" accept="image/*" />
+      <button id="analyzeImageButton">Analyze Image</button>
+    </div>
+    <!-- Display Transcription Result in Text Input -->
+    <div>
+      <textarea
+        id="transcriptionResult"
+        rows="4"
+        cols="50"
+        placeholder="Transcription will appear here..."
+      ></textarea>
+    </div>
+
+    <!-- Add Magic Button -->
+    <div>
+      <button id="magicButton">Categorize and Tag</button>
+    </div>
+
+    <!-- Display Categorization and Tagging Result -->
+    <div>
+      <textarea
+        id="categorizationResult"
+        rows="4"
+        cols="50"
+        placeholder="Categorization and tags will appear here..."
+      ></textarea>
+    </div>
+    <video id="video" autoplay></video>
+    <canvas id="canvas"></canvas>
+    <canvas id="segment"></canvas>
+
+    <script type="module">
+      import {
+        ObjectDetector,
+        ImageSegmenter,
+        PoseLandmarker,
+        FaceLandmarker,
+        FilesetResolver,
+        DrawingUtils,
+      } from "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision";
+      const vision = await FilesetResolver.forVisionTasks(
+        "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision/wasm"
+      );
+      let computeModule = {};
+
+      let video = document.getElementById("video");
+      let canvas = document.getElementById("canvas");
+      let ctx = canvas.getContext("2d");
+      let segmentCanvas = document.getElementById("segment");
+      let segmentCtx = segmentCanvas.getContext("2d");
+      let drawingUtils = new DrawingUtils(ctx);
+      let mediaStream = null;
+      //let tipsHistory = [];
+      let step = "";
+      let tip = "";
+      let answer = "";
+      let caution = "";
+      let recommendation = "";
+      let finished;
+      let stepFinished;
+      let progress = "";
+      let check = "";
+      let numberedProgress = "0. The user has now started this step.";
+      let progressHistory = [];
+      let progressHistoryString = "0. The user has now started this step.";
+      let numberedTip = "";
+      let tipHistory = [];
+      let tipHistoryString = "";
+      let currentStepString = "The user starts the first step of the whole task, you should identify which task the user is trying to do. Once you know, you should say 'look like you are ...' in the current step section. And set the finished section as true.";
+      let nextStepContent = "";
+      let currentStep = 1;
+      let micValue = 0;
+      let previousMicValue = 0;
+      let realTranscriptionText = "";
+      let nowYouShould = "";
+      let responseid;
+
+      const startRecordButton = document.getElementById("startRecord");
+      const stopRecordButton = document.getElementById("stopRecord");
+      const previousButton = document.getElementById("previousButton");
+      const nextButton = document.getElementById("nextButton");
+      const audioPlayer = document.getElementById("audioPlayer");
+      const audioUpload = document.getElementById("audioUpload");
+      const transcribeButton = document.getElementById("transcribeButton");
+      const transcriptionResult = document.getElementById(
+        "transcriptionResult"
+      );
+      const recordingTimer = document.getElementById("recordingTimer");
+      let mediaRecorder;
+      let audioChunks = [];
+      let recordedAudioBlob = null;
+      let recordingInterval;
+      let transcriptionText = "";
+      let imageUrls = [];
+
+      let instructionData = [
+        "1.1 Place the pour-over dripper on a mug.",
+        "1.2 Fold a paper filter into a quarter-circle and form a cone inside the dripper.",
+        "1.3 Rinse the filter with cold water",
+        "1.4 Then moisten it completely with hot water.",
+        "2.1 Empty water from mug, then place dripper with wet filter back on it.",
+        "2.2 Measure 12 ounces of cold water",
+        "2.3 Transfer it into the kettle. Heat the kettle water for 3 minutes.",
+        "3.1 Place the tortilla on the cutting board.",
+        "3.2 Fold the tortilla in half into a semi-circle.",
+        "3.3 Spread Nutella on the tortilla using a butter knife.",
+        "3.4 Top with banana slices.",
+        "3.5 Sprinkle cinnamon on the tortilla.",
+        "3.6 Microwave the tortilla for 1 minute.",
+        "4.1 Measure 30 g (3 tablespoons) of coffee beans using a digital scale and grind them to a coarse sand consistency, about 20 seconds.",
+        "4.2 Transfer the grounds to the filter cone and place the mug with the dripper on the scale, setting it to zero.",
+        "5.1 Slowly pour the water over the grounds in a circular motion.",
+        "5.2 Do not overfill beyond the top of the paper filter.",
+        "5.3 Your scale should read 100 g once you've poured enough water into the dripper.",
+        "6.1 Let the coffee drain completely into the mug before removing the dripper.",
+        "6.2 Discard the paper filter and coffee grounds.",
+        "7.1 Take the tortilla out from the microwave.",
+        "7.2 During the coffee draining, slice the tortilla in half using a butter knife to create two triangular wedges.",
+        "7.3 Place tortilla wedges on a plate to serve.",
+      ];
+
+      startRecordButton.addEventListener("click", startRecording);
+      stopRecordButton.addEventListener("click", stopRecording);
+      transcribeButton.addEventListener("click", transcribeAudio);
+      // transcribeButton.addEventListener('click', function() {
+      //     // Ensure AudioContext is started/resumed on user gesture
+      //     monitorAudio();
+      // });
+      
+      previousButton.addEventListener("click", previousStep);
+      nextButton.addEventListener("click", nextStep);
+      
+
+      const magicButton = document.getElementById("magicButton");
+      const categorizationResult = document.getElementById(
+        "categorizationResult"
+      );
+
+      magicButton.addEventListener("click", categorizeAndTagText);
+
+      const imageUpload = document.getElementById("imageUpload");
+      const analyzeImageButton = document.getElementById("analyzeImageButton");
+      const imageAnalysisResult = document.getElementById(
+        "imageAnalysisResult"
+      );
+
+      analyzeImageButton.addEventListener("click", analyzeImage);
+
+      async function capture() {
+        try {
+          mediaStream = await navigator.mediaDevices.getDisplayMedia({
+            video: {
+              displaySurface: "window",
+              preferCurrentTab: false,
+            },
+          });
+          video.srcObject = mediaStream;
+          start();
+        } catch (err) {
+          console.error("Error: " + err);
+        }
+      }
+      capture();
+
+      let peer = new Peer("4d7a1");
+      let dataChannel;
+      let lastUpdateTime = 0;
+      let statusTipReceived = false;
+      let answerTipReceived = false;
+      let lastValidRequestId = null;
+      let isRecording = false;
+      //let stopRecordingTimeoutId = null;
+      let silenceStart = null;
+      let silenceTimeoutId = null;
+
+
+      let segmentStream = segmentCanvas.captureStream(30);
+      peer.on("connection", (conn) => {
+        conn.on("open", () => {
+          dataChannel = conn;
+          console.log("Start sending data");
+          
+          conn.on("data", (data) => {
+            if (data.startsWith("step:")) {
+              currentStep = parseInt(data.substring(5), 10) + 1;
+              progressHistory.length = 0;
+              progressHistoryString = "0. The user has now started this step.";
+              numberedProgress = "0. The user has now started this step.";
+              numberedTip = "";
+              tipHistory = [];
+              tipHistoryString = "";
+              
+              statusTipReceived = true;
+              setTimeout(function() {
+                  statusTipReceived = false;
+              }, 3000);
+              console.log("Received Step from User:", currentStep);
+            } else if (data.startsWith("mic:")) {
+              micValue = parseInt(data.substring(4), 10);
+              console.log("Received mic value:", micValue);
+
+              // Check if micValue changes from 0 to 1 to start recording
+              if (previousMicValue === 0 && micValue === 1) {
+                  startRecording();
+              }
+
+              // Check if micValue changes from 1 to 0 to stop recording
+              if (previousMicValue === 1 && micValue === 0) {
+                  // stopRecording();
+                  startRecording();
+              }
+
+              // Update previousMicValue for the next comparison
+              previousMicValue = micValue;
+            }
+          });
+        });
+        //const call = peer.call(conn.peer, segmentStream);
+      });
+
+      const firebaseConfig = {
+        apiKey: "AIzaSyCXFrItrkyT7iXbb4_1bNCo8RX5NaKgxdA",
+        authDomain: "aui-in-task-guidance.firebaseapp.com",
+        databaseURL: "https://aui-in-task-guidance-default-rtdb.firebaseio.com",
+        projectId: "aui-in-task-guidance",
+        storageBucket: "aui-in-task-guidance.appspot.com",
+        messagingSenderId: "481806573135",
+        appId: "1:481806573135:web:44fc776dd0df2a0c1c543a",
+        measurementId: "G-YYQV1MMFHM",
+      };
+
+      // Initialize Firebase
+      firebase.initializeApp(firebaseConfig);
+
+      // Initialize Firebase Storage
+      var storage = firebase.storage();
+
+//       // Upload File
+//       function uploadFile() {
+//         console.log("Start uploading the image");
+//         var file = document.getElementById("file").files[0]; // Assuming you have an <input type="file" id="file"/>
+//         if (!file) {
+//           console.error("No file selected");
+//           return;
+//         }
+//         var storageRef = storage.ref("fireImgs/imageName.jpg");
+
+//         storageRef
+//           .put(file)
+//           .then(function (snapshot) {
+//             console.log("Uploaded a blob or file!");
+
+//             // Make the image publicly accessible
+//             snapshot.ref
+//               .getDownloadURL()
+//               .then(function (url) {
+//                 console.log(
+//                   "Image uploaded to Firebase Storage. Public URL:",
+//                   url
+//                 );
+
+//                 // Call OpenAI API with the public URL
+//                 //callOpenAIAPI(url);
+//               })
+//               .catch(function (error) {
+//                 console.error("Error getting the download URL", error);
+//               });
+//           })
+//           .catch(function (error) {
+//             console.error("Error uploading file", error);
+//           });
+//       }
+
+      // Upload Frame as Data URL
+      function uploadFrame() {
+         if (!canvas || !video) {
+              console.log('Canvas or video element is not ready.');
+              return; // Make sure canvas and video elements are ready and contain data
+          }
+        // Draw the current frame from the video onto the canvas
+        if (video.readyState === video.HAVE_ENOUGH_DATA) {
+            canvas.width = video.videoWidth;
+            canvas.height = video.videoHeight;
+            ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+            const frameDataUrl = canvas.toDataURL("image/jpeg");
+            // Now proceed with your logic
+        }
+
+        // Convert the canvas content to a data URL
+        const frameDataUrl = canvas.toDataURL("image/jpeg");
+
+        // Convert the data URL to a blob
+        const blob = dataURLtoBlob(frameDataUrl);
+        
+        if (!blob) {
+            console.log('Failed to convert data URL to blob.');
+            return; // Exit if conversion failed
+        }
+
+        // Generate a random file name
+        const fileName = `frame-${Date.now()}.jpg`;
+
+        // Create a reference to the file location in Firebase
+        var storageRef = storage.ref(`images/${fileName}`);
+
+        // Upload the blob to Firebase Storage
+        storageRef
+          .put(blob)
+          .then(function (snapshot) {
+            //console.log("Uploaded a frame!");
+
+            // Get the downloadable URL
+            snapshot.ref
+              .getDownloadURL()
+              .then(function (url) {
+                imageUrls.push(url);
+                if (imageUrls.length > 1) {
+                  imageUrls.shift(); // Remove the oldest URL
+                }
+                //console.log(url);
+
+                // Call OpenAI API with the public URL
+                //callOpenAIAPI(url);
+              })
+              .catch(function (error) {
+                console.error("Error getting the download URL", error);
+              });
+          })
+          .catch(function (error) {
+            console.error("Error uploading frame", error);
+          });
+      }
+
+      // Helper function to convert a data URL to a blob
+     function dataURLtoBlob(dataurl) {
+        if (!dataurl || !dataurl.includes(',')) {
+            console.error('Invalid data URL provided:', dataurl);
+            return null; // Exit early or throw an error as appropriate for your use case
+        }
+
+       var arr = dataurl.split(","),
+        mime = arr[0].match(/:(.*?);/);
+
+      if (!mime || mime.length < 2) {
+          //console.warn('MIME type not found in data URL, defaulting to image/jpeg:', dataurl);
+          mime = ["", "image/jpeg"]; // Default MIME type
+      }
+
+      var bstr = atob(arr[1]),
+          n = bstr.length,
+          u8arr = new Uint8Array(n);
+      while (n--) {
+          u8arr[n] = bstr.charCodeAt(n);
+      }
+      return new Blob([u8arr], { type: mime[1] });
+    }
+      
+            
+      function generateRequestId() {
+          return Date.now();
+      }
+
+      // Call OpenAI API
+      function callOpenAIAPI(imageUrl) {
+        //if (statusTipReceived) return;
+        // if (answerTipReceived) {
+        //   if (Date.now() - lastUpdateTime < 3000) {
+        //     console.log("Latency happened");
+        //        return;
+        //   }
+        //   answerTipReceived = false;
+        // }
+        
+        //console.log(`${realTranscriptionText}Current Step: ${instructionData[currentStep-1]}; Tip History: ${tipHistoryString}; User's status history in step ${currentStep}: ${progressHistoryString}; User's latest status in step ${currentStep} is: ${numberedProgress}${nowYouShould}`);
+        console.log(`${realTranscriptionText}Current Step: ${currentStepString}; Tip History: ${tipHistoryString}; User's status history in step ${currentStep}: ${progressHistoryString}; User's latest status in step ${currentStep} is: ${numberedProgress}`);
+        
+        const OPENAI_API_KEY =
+          "sk-proj-w7r12pw7aTqriHoo0r99T3BlbkFJj0SMfCCsaHDatnFZMJYi";
+        
+        const recentImageUrls = imageUrls.slice(-1); 
+        //console.log(recentImageUrls,);
+
+        const data = {
+          model: "gpt-4-vision-preview",
+          messages: [
+            {
+              role: "system",
+              content: `
+                                You're a helpful assistant in AR to provide tips to the user when they are cleaning the room based on the user's current view, the current step, and the user's status log. Here's the instruction:                                 
+                                
+                                Here's an instruction if the user is trying to use a coffee machine:
+                                  1. Plug the coffee machine. 
+                                  2. Press the power button to turn the machine on.
+                                  3. Open the lever fully until it stops to access the pod insertion slot. 
+                                  4. Insert a Nespresso pod into the slot.
+                                  5. Close the lever fully.
+                                  6. Place a cup under the coffee outlet.
+                                  7. Press the desired coffee button to start the coffee extraction process.
+                                  8. Wait for the extraction to complete automatically; the machine stops once the preset volume has been served.
+                                  9. Ensure the button stops blinking and remains lit, then remove the cup. Do not open the lever while the button is blinking.
+                                  10. Open the lever to eject the used pod into the pod container.
+                                  11. Close the lever fully until it stops.
+                                  
+                                Here's an instruction if the user is trying to clean the room:
+                                	1.	Secure all the jars and bottles by putting their lids on and then place them in a paper bag. 
+                                  2.	Pack the remaining items and put them in another bag.
+                                  3.	Unplug all electronic devices such as scales, water heaters, and coffee grinders, and place them in a brown paper bag.
+                                  4.	Start assembling the desk lamp.
+                                  5.	Place the three packed paper bags on the desk to the right and also place the whiteboard eraser on the stand of the electronic screen.
+                                  6.	Return the four chairs to their original places.
+                                
+                                Here's an instruction if the user is trying to make a banana quesadilla:
+                                  1. "Place tortilla on cutting board.",
+                                  2. "Use a butter knife to spread a layer of Nutella onto tortilla.",
+                                  3. "Top with banana slices.",
+                                  4. "Sprinkle small amount of cinnamon onto tortilla.",
+                                  5. "Fold tortilla in half into semi-circle.",
+                                  6. "Slice tortilla in half using butter knife to create two triangular wedges.",
+                                  7. "Place tortilla wedges on a plate to serve."
+
+                                Requirement:
+                                  You will be provided with:
+                                  1. Which step the user is currently on.
+                                  2. A series of images of the user's current first-person view.
+                                  3. The user's status history and latest status in the current step.
+                                
+                                Please infer the user's current task to provide a tip to help them complete the current step based on the image.
+                                Give any tip you can think of to help the user complete the task based on the provided instructions and image. 
+                                Only generate one type of tip at once.
+                                Please reply everything in the format of json.
+                                If there is no corresponding objects in the current view, you should also mention that.
+                                Each tip should be concise and clear and only contain one sentence. Limit each tip in 10 words.
+                                If there's no difference with the last tip that you generated since no change detected in the environment, you should keep the tip the same with your last tip.
+                                The tip should be based on the current step.
+                                Besides of the tips, you should also describe the user's current status in the current step in 20 words.
+                                
+                                Based on the user's current step in a task and a series of images from their camera view, provide tips that could help them progress efficiently. 
+                                The tips should be directly relevant to what appears in the images and the task described in the user's current step. 
+                                Your response should help guide the user towards completing the step they are on, taking into account any visible progress or lack thereof in the images.
+                                Your tips can offer guidance on efficiency, caution, answer direct queries from the user, or suggest moving to the next step if it seems the current one has been completed based on the image analysis. 
+                                However, the advice should be flexible enough to be valuable even if the image analysis does not perfectly align with the user's stated step. 
+                                If the images do not provide enough information to confirm the user's progress on the specific step they mentioned, focus on providing general advice that could apply to a range of related activities or indicate if something important seems missing or done incorrectly.
+                                Always aim for your advice to be actionable and based on what you can infer from the images and the user's description. 
+                                Avoid giving steps that are too far ahead or behind the user's current stated task.
+                                
+                                Types of Tips:
+                                You have 4 type of tips to offer to the user, and you should offer them based on the situation:
+                                  1. Caution Tip: (If things are not going right and you wanna remind it)
+                                  Caution the user about any of their mistake or action which is below the average performance you find, and point out any dependencies that might be lacking in the current step. (e.g. "You didn't do ... right" or "Don't ...") You can repeat the Caution Tip if the user currently needs it, but do not change the wording if the information remains the same.
+                                  2. Answer Tip:
+                                  If there's a user feedback or question, the tip should answer the user's feedback.
+                                  3. Status Tip: (i.e. the "finished or not" check)
+                                  Just tell the user what they have already done. Don't tell the user what they should do next. (e.g."Yay you've already ...") Do not provide repeated Check Tips with the same or similar information. 
+                                  4. Recommendation Tip: (You must provide this tip)
+                                  Friendly chat with the user: here's examples for each step:
+                                  
+                                    1.	Secure all the jars and bottles by putting their lids on and then place them in a paper bag.
+                                      possible recommendation tips examples(You can freely create the corresponding recommendation tips based on the actual scene, but keep a similar tone as follows.): "Perfect, let's secure all those jars and bottles. You know, it's always better to keep things tidy and spill-free. It’s like putting everything back where their stories began. Ready for their next adventure, aren't they?"
+                                    2.	Pack the remaining items and put them in another bag.
+                                      possible recommendation tips examples: "Now, let’s gather the rest of your items. It’s like packing up treasures, isn't it? Each item probably has its own tale or a little secret."
+                                    3.	Unplug all electronic devices such as scales, water heaters, and coffee grinders, and place them in a brown paper bag.
+                                      possible recommendation tips examples: "Let’s give these gadgets a little rest. Unplugging them not only saves energy but gives them a well-deserved break too. Imagine if you had a power button to pause and unwind!"
+                                    4.	Start assembling the desk lamp.
+                                      possible recommendation tips examples: "This lamp could use some attention, let's start putting it together. It’s kind of like piecing together a puzzle, isn’t it? Every piece has its place, bringing us closer to shedding some light."
+                                    5.	Place the three packed paper bags on the desk to the right and also place the whiteboard eraser on the stand of the electronic screen.
+                                      possible recommendation tips examples: "Great, let’s place these bags to the right. Keeping everything organized can really clear the mind. And the eraser, well, it's always good to keep it handy for when new ideas need room to shine."
+                                    6.	Return the four chairs to their original places.
+                                      possible recommendation tips examples: "And now for the chairs. It’s nice to return things to where they belong, right? It’s almost like they’re old friends just waiting to catch up with you and offer a comfy seat."
+                                  
+                                Tip History:
+                                Please avoid using different wording for the same information: please pay attention to the tips you have given in the tip history. If there is a similar tip, please use that tip directly.
+                                Always pay attention to the Tip History: If you find yourself giving too many Efficiency and Caution Tips with similar content in the Tip History, you should try to diversify your advice by providing more Check and Recommendation Tips instead.
+
+                                Status:
+                                You should describe what the user have done in the current step. (e.g. "The user has placed the pour-over dripper on a mug.")
+                                
+                                Progress: 
+                                In the current step, how close is the user to finishing the step? Rate it from 1 to 10. e.g. 9/10.
+                                
+                                Finished or not:
+                                If you think the user finished this step (once the progress is higher than 6/10), then output true to prompt the user go to the next step. Don't be too strict. If the step is about waiting for something, then if you find the user is waiting you can consider it as finished.
+                                
+                                Next Step:
+                                You should based on the history of tips and status of the current step to keep planning what the user should do in the next step.
+                                
+                                Formats:
+                                Please don't use backticks wrapper for the json, just directly start from a {.
+                                Also don't include the apostrophe ' in the result like "there's" or "you're" since it is not included in the font. This is the most important thing. Please remember!!!
+                                The json should be in the following format:
+                                {  
+                                    "step": "n. the current step", (for example: 1. Press the power button to turn the machine on.) // you should provide the text content of the current step to the user, you should provide exact same text in the instructions I gave you.
+                                    "next": "...the next step that you think would be reasonable...", // you should provide the next step content based on what you see and also the context in the user's view. The next step should never be repeated to the previous steps. i.e. only go forward, never go back. the order number of next step should always be larger than the current step.
+                                    "status": "(if the status is changed and is different from the latest statues, otherwise you don't have to update it)...Your concise, 20-word maximum description of user's current status here... Use the second person",
+                                    "answer": "(if the user ask you now)...Your concise, 20-word maximum description of answer tip here... Use the second person",
+                                    "caution": "(if you think would be helpful now)...Your concise, 20-word maximum description of caution tip here... Use the second person",
+                                    "progress": "?/10", // You need to include double quotes when you output.
+                                    "recommendation": "(if you think would be helpful now)...Your concise, 20-word maximum description of recommendation tip here... Use the second person",
+                                    "finished": true / false //identify if the user finished the step or not, once the user hit 60/100 of it, then you should consider it as true. This should be boolean, don't wrap it with ""
+                                }
+                                `,
+            },
+            {
+              role: "user",
+              content: [
+                {
+                  type: "text",
+                  text: `${realTranscriptionText}Current Step: ${currentStepString}; Step History: ${tipHistoryString}; User's status history in this step: ${progressHistoryString}; User's latest status in this step is: ${numberedProgress}`,
+                },
+                 ...recentImageUrls.map(url => ({
+                  type: "image_url",
+                  image_url: {
+                                  url: url,
+                                  detail: "high",
+                              }
+                })),
+              ],
+            },
+          ],
+          max_tokens: 300,
+        };
+
+        fetch("https://api.openai.com/v1/chat/completions", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${OPENAI_API_KEY}`,
+          },
+          body: JSON.stringify(data),
+        })
+          .then((response) => response.json())
+          .then((data) => {
+          
+          if (statusTipReceived || answerTipReceived) {
+              console.log("Ignore expired responses");
+              return;
+          }
+            // Log the content for debugging purposes
+            console.log(data.choices[0].message.content);
+            // Now pass the full data object to the processing function
+            processApiResponse(data);
+          })
+          .catch((error) => console.error("Error:", error));
+        realTranscriptionText = "";
+        nowYouShould = "";
+      }
+
+      
+      // parse the API response
+      function processApiResponse(data) {
+        if (data.choices && data.choices.length > 0) {
+          // Parse the JSON string into an object
+          const content = JSON.parse(data.choices[0].message.content);
+
+          const now = Date.now();
+          
+          if(content.recommendation){
+           playTextAsSpeech(content.recommendation); 
+          }
+
+          
+          progress = content.status;
+          //console.log("Updated progress:", progress);
+          numberedProgress = (progressHistory.length + 1) + '. ' + progress;
+          progressHistory.push(numberedProgress);
+          progressHistoryString = JSON.stringify(progressHistory);
+          //console.log("Updated progress history:", progressHistoryString);
+
+          step = content.step;
+          answer = content.answer;
+          caution = content.caution;
+          recommendation = content.recommendation;
+          finished = content.finished;
+          nextStepContent = content.next;
+          console.log ("the next step: " + nextStepContent);
+          
+          responseid = 'id_' + Math.random().toString(36).substring(2, 15);
+          console.log(responseid);
+          
+          stepFinished = finished;
+          
+          // Check if the 'finished' field is present and true
+          if (stepFinished === true) {
+            //currentStep += 1; // Move to the next step
+            //console.log(`Moving to Step ${currentStep}`);
+            //nowYouShould = " Now you should show the next step of this step. i.e. " + nextStepContent;
+            //console.log(nowYouShould);
+            currentStepString = nextStepContent;
+            console.log("currentStepString = " + currentStepString);
+            lastUpdateTime = now; // Update the last update time
+            
+            // clear the progressHistory and the tipHistory of the current step.
+            progressHistory.length = 0;
+            progressHistoryString = "0. The user has now started this step.";
+            numberedProgress = "0. The user has now started this step.";
+            // numberedTip = "";
+            //tipHistory = [];
+            //tipHistoryString = "";
+            stepFinished = false;
+          }
+          // //console.log(tips);
+          // tipsHistory.length = 0;
+          // tips.forEach((item) => {
+          //   if (item.tip.includes("Status")) {
+          //       statusTipReceived = true;
+          //       console.log("Step Finished");
+          //   }
+          //   if (item.tip.includes("Answer")) {
+          //       lastUpdateTime = Date.now();
+          //       answerTipReceived = true;
+          //       console.log("Answer Received", lastUpdateTime);
+          //   }
+          //   tipsHistory.push(item);
+          // });
+          
+          // console.log("the tip:", tip);
+          
+            // if (tip.includes("Efficiency")) {
+            //     nowYouShould = " Now you should provide the 'Check' or 'Recommendation' Tip:";
+            //     console.log("nowYouShould");
+            // }
+            // if (answer || caution) {
+            //     lastUpdateTime = Date.now();
+            //     answerTipReceived = true;
+            //     console.log("Answer / Caution Received", lastUpdateTime);
+            // }
+          
+          numberedTip = (tipHistory.length + 1) + '. ' + step;
+          tipHistory.push(numberedTip);
+          tipHistoryString = JSON.stringify(tipHistory);
+          //console.log("Updated progress history:", tipHistoryString);
+
+          
+        } else {
+          console.log("Invalid data format or no choices available");
+        }
+      }
+      
+      async function playTextAsSpeech(text) {
+        try {
+          const options = {
+            method: 'POST',
+            headers: {
+              'xi-api-key': 'c5a125b4bb891f21cbde767ba9953387',
+              'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({text: text})
+          };
+
+          fetch('https://api.elevenlabs.io/v1/text-to-speech/XrExE9yKIg1WjnnlVkGX', options)
+             .then(response => {
+                if (!response.ok) {
+                  throw new Error(`HTTP error! status: ${response.status}`);
+                }
+                return response.blob(); // Process the response as a blob if it's a file
+              })
+              .then(blob => {
+                const audioUrl = URL.createObjectURL(blob); // Create a URL for the blob object
+                const audio = new Audio(audioUrl); // Create a new audio object with this URL
+                audio.play(); // Play the audio
+              })
+              .catch(e => {
+                console.error('Error fetching audio file', e);
+              });
+        } catch (error) {
+          console.error('Error playing text:', error);
+        }
+      }
+
+      function sendData(data) {
+        if (dataChannel) {
+          // console.log("sending data");
+          dataChannel.send(JSON.stringify(data));
+        }
+      }
+
+      function start() {
+        objectDetection();
+        // imageSegmentation();
+        // faceDetection();
+        // poseDetection();
+      }
+
+      function loop() {
+        window.requestAnimationFrame(loop);
+        const width = video.videoWidth;
+        const height = video.videoHeight;
+        canvas.width = width;
+        canvas.height = height;
+        ctx.clearRect(0, 0, width, height);
+        segmentCanvas.width = width;
+        segmentCanvas.height = height;
+        segmentCtx.clearRect(0, 0, width, height);
+
+        let result = {};
+        if (computeModule.objectDetector) {
+          result.objectDetector = computeModule.objectDetector.detectForVideo(
+            video,
+            performance.now()
+          );
+          result.progress = progress;
+          result.answer = answer;
+          result.caution = caution;
+          result.step = step;
+          result.currentStep = currentStep;
+          result.finished = finished;
+          result.responseid = responseid;
+          result.transcriptionText = transcriptionText;
+          result.streamWidth = video.videoWidth;
+          result.streamHeight = video.videoHeight;
+
+          //drawObject(result.objectDetector);
+        }
+        window.result = result;
+        sendData(result);
+        //console.log(result)
+      }
+      loop();
+
+      async function objectDetection() {
+        computeModule.objectDetector = await ObjectDetector.createFromOptions(
+          vision,
+          {
+            baseOptions: {
+              modelAssetPath:
+                "https://storage.googleapis.com/mediapipe-models/object_detector/efficientdet_lite0/float16/1/efficientdet_lite0.tflite",
+              delegate: "GPU",
+            },
+            scoreThreshold: 0.5,
+            runningMode: "video",
+          }
+        );
+      }
+
+      //       function drawObject(result) {
+      //         for (let detection of result.detections) {
+      //           const name = detection.categories[0].categoryName;
+      //           const score = Math.round(
+      //             parseFloat(detection.categories[0].score) * 100
+      //           );
+      //           const bbox = detection.boundingBox;
+      //           let x = bbox.originX;
+      //           let y = bbox.originY;
+      //           let width = bbox.width;
+      //           let height = bbox.height;
+      //           let centerX = x + width / 2;
+      //           let centerY = y + height / 2;
+      //           //console.log(name, score, x, y, width, height);
+
+      //           ctx.strokeStyle = "#fff";
+      //           ctx.fillStyle = "rgba(255, 255, 0, 0.25)";
+      //           ctx.lineWidth = 1;
+      //           ctx.fillRect(x, y, width, height);
+      //           ctx.strokeRect(x, y, width, height);
+      //           ctx.fillRect(centerX - 2, centerY - 2, 4, 4);
+      //           ctx.strokeRect(centerX - 2, centerY - 2, 4, 4);
+
+      //           ctx.fillStyle = "#007f8b";
+      //           ctx.font = "12px Arial";
+      //           ctx.fillText(`${name} - ${score}%`, x, y - 10);
+      //         }
+      //       }
+
+      async function analyzeImage() {
+        if (!imageUpload.files[0]) {
+          displayError("Please select an image file first.");
+          return;
+        }
+
+        let formData = new FormData();
+        formData.append(
+          "image",
+          imageUpload.files[0],
+          imageUpload.files[0].name
+        );
+
+        try {
+          const response = await fetch("/upload-image", {
+            method: "POST",
+            body: formData,
+          });
+          const result = await response.json();
+          console.log("Received response:", result); // Log the received response
+          displayImageAnalysis(result);
+        } catch (error) {
+          console.error("Error analyzing image:", error);
+          displayError(
+            "Error analyzing image. Please check the console for more details."
+          );
+        }
+      }
+
+      function displayImageAnalysis(analysisResponse) {
+        if (analysisResponse && analysisResponse.analysis) {
+          transcriptionResult.value = analysisResponse.analysis;
+        } else {
+          transcriptionResult.value = "No analysis results available.";
+        }
+      }
+
+      //       function displayError(message, error = null) {
+      //         let errorMessage = message;
+      //         if (error) {
+      //           console.error("Detailed Error:", error); // Log the detailed error to the console
+
+      //           // Append additional error information if available
+      //           errorMessage +=
+      //             "\nError Details: " + (error.message || JSON.stringify(error));
+      //         }
+
+      //         // Append this error message to the existing content in the textarea
+      //         imageAnalysisResult.value +=
+      //           (imageAnalysisResult.value ? "\n" : "") + errorMessage;
+      //       }
+
+      async function categorizeAndTagText() {
+        const textToCategorize = transcriptionResult.value;
+        if (!textToCategorize) {
+          displayError("Please transcribe text before categorization.");
+          return;
+        }
+
+        try {
+          const response = await fetch("/categorize", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ text: textToCategorize }),
+          });
+          const result = await response.json();
+          displayCategorization(result);
+        } catch (error) {
+          console.error("Error in categorization:", error);
+          displayError(
+            "Error in categorization. Check the console for more details."
+          );
+        }
+      }
+
+      function displayCategorization(categorizationResponse) {
+        if (categorizationResponse && categorizationResponse.categorization) {
+          categorizationResult.value = categorizationResponse.categorization;
+        } else {
+          categorizationResult.value = "No categorization results available.";
+        }
+      }
+
+      async function startRecording() {
+        try {
+          if (isRecording) return; 
+          isRecording = true;
+          const stream = await navigator.mediaDevices.getUserMedia({
+            audio: true,
+            video: false,
+          }); // Specify only audio
+          mediaRecorder = new MediaRecorder(stream);
+          audioChunks = [];
+
+          mediaRecorder.ondataavailable = (event) => {
+            audioChunks.push(event.data);
+          };
+
+          mediaRecorder.onstop = () => {
+            recordedAudioBlob = new Blob(audioChunks, { type: "audio/wav" });
+            audioPlayer.src = URL.createObjectURL(recordedAudioBlob);
+          };
+
+          mediaRecorder.start();
+          startTimer();
+          startRecordButton.disabled = true;
+          stopRecordButton.disabled = false;
+          console.log("Recording started");
+          setTimeout(function() {
+            stopRecording();
+        }, 10000);
+        } catch (error) {
+          console.error("Error starting recording:", error);
+          displayError(
+            "Error starting recording. Please check your microphone permissions."
+          );
+        }
+      }
+
+      function stopRecording() {
+        // if (silenceTimeoutId) {
+        //     clearTimeout(silenceTimeoutId); // Cancel any pending stop due to silence
+        //     silenceTimeoutId = null;
+        // }
+        if (!isRecording) return;
+        // if (stopRecordingTimeoutId) {
+        //     clearTimeout(stopRecordingTimeoutId); // Ensure no pending stop action
+        //     stopRecordingTimeoutId = null;
+        // }
+
+        isRecording = false;
+        if (mediaRecorder && mediaRecorder.state !== "inactive") {
+          mediaRecorder.stop();
+          stopTimer();
+          startRecordButton.disabled = false;
+          stopRecordButton.disabled = true;
+          console.log("Recording stopped");
+          setTimeout(function() {
+            transcribeAudio();
+        }, 1000);
+        }
+      }
+
+      function startTimer() {
+        let startTime = Date.now();
+        recordingInterval = setInterval(() => {
+          let elapsedTime = Date.now() - startTime;
+          let minutes = Math.floor(elapsedTime / 60000);
+          let seconds = Math.floor((elapsedTime % 60000) / 1000);
+          recordingTimer.textContent = `${pad(minutes)}:${pad(seconds)}`;
+        }, 1000);
+        console.log("Timer started");
+      }
+
+      function stopTimer() {
+        clearInterval(recordingInterval);
+        recordingTimer.textContent = "00:00";
+        console.log("Timer stopped");
+      }
+
+      function pad(number) {
+        return number < 10 ? "0" + number : number;
+      }
+
+      async function transcribeAudio() {
+        console.log("Transcription started");
+        let formData = new FormData();
+        if (audioUpload.files[0]) {
+          console.log("Using uploaded file for transcription");
+          formData.append(
+            "audio",
+            audioUpload.files[0],
+            audioUpload.files[0].name
+          );
+        } else if (recordedAudioBlob) {
+          console.log("Using recorded audio for transcription");
+          formData.append("audio", recordedAudioBlob, "recorded.wav");
+        } else {
+          displayError("Please record or upload an audio file first.");
+          return;
+        }
+
+        try {
+          const response = await fetch("/upload", {
+            method: "POST",
+            body: formData,
+          });
+          const result = await response.json();
+          displayTranscription(result);
+          console.log("Transcription completed");
+          callOpenAIAPI();
+        } catch (error) {
+          console.error("Error transcribing audio:", error);
+          displayError(
+            "Error transcribing audio. Please check the console for more details."
+          );
+        }
+      }
+
+      function displayTranscription(transcriptionResponse) {
+        if (transcriptionResponse && transcriptionResponse.transcription) {
+          transcriptionText =
+            transcriptionResponse.transcription.text || "null"; //used to be "No transcription text found.
+          transcriptionResult.value +=
+            (transcriptionResult.value ? "\n" : "") + transcriptionText;
+          realTranscriptionText = "User Question: " + transcriptionText + " "; // which sent to GPT and let it now it is from user feedback
+          console.log("transcriptionResponse:" + transcriptionText);
+          nowYouShould = " Now you should provide the 'answer' tip to answer the user's question:";
+        } else {
+          transcriptionResult.value +=
+            (transcriptionResult.value ? "\n" : "") +
+            "No transcription available or transcription format is not recognized.";
+        }
+      }
+
+      function displayError(message) {
+        transcriptionResult.value +=
+          (transcriptionResult.value ? "\n" : "") + message;
+      }
+      
+      function previousStep(){
+        currentStep--;
+        progressHistory.length = 0;
+        progressHistoryString = "0. The user has now started this step.";
+        numberedProgress = "0. The user has now started this step.";
+        numberedTip = "";
+        tipHistory = [];
+        tipHistoryString = "";
+        statusTipReceived = false;
+        // statusTipReceived = true;
+        // setTimeout(function() {
+        //     statusTipReceived = false;
+        // }, 3000);
+        console.log(currentStep);
+      }
+      
+      function nextStep(){
+        currentStep++;
+        progressHistory.length = 0;
+        progressHistoryString = "0. The user has now started this step.";
+        numberedProgress = "0. The user has now started this step.";
+        numberedTip = "";
+        tipHistory = [];
+        tipHistoryString = "";
+        statusTipReceived = false;
+        // statusTipReceived = true;
+        // setTimeout(function() {
+        //     statusTipReceived = false;
+        // }, 3000);
+        console.log(currentStep);
+      }
+      function stopUploading(){
+        statusTipReceived = true;
+        console.log("Uploading Stopped");
+      }
+      
+      async function monitorAudio() {
+          const audioContext = new (window.AudioContext || window.webkitAudioContext)();
+          if (audioContext.state === 'suspended') {
+              audioContext.resume();
+          }
+
+          const stream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
+          const source = audioContext.createMediaStreamSource(stream);
+          const analyser = audioContext.createAnalyser();
+          source.connect(analyser);
+          analyser.fftSize = 512;
+          const bufferLength = analyser.frequencyBinCount;
+          const dataArray = new Uint8Array(bufferLength);
+
+          const checkAudio = () => {
+              analyser.getByteFrequencyData(dataArray);
+              let sum = 0;
+              for (let i = 0; i < bufferLength; i++) {
+                  sum += dataArray[i];
+              }
+              let average = sum / bufferLength;
+
+              if (average > 90) {
+                if (!isRecording) {
+                    startRecording();
+                }
+              }  else if (average > 20) {
+                if (silenceTimeoutId) {
+                    clearTimeout(silenceTimeoutId); // Cancel the pending stop
+                    silenceTimeoutId = null;
+                }
+              }  else if (average <= 20 && isRecording && !silenceTimeoutId) {
+                  silenceTimeoutId = setTimeout(() => {
+                          if (isRecording) {
+                              stopRecording();
+                          }
+                          silenceTimeoutId = null; // Ensure the ID is cleared once used
+                      }, 3000);
+                  }
+            
+              // // Check if we've been silent long enough to stop recording
+              // if (isRecording && silenceStart && (Date.now() - silenceStart >= 2000)) {
+              //     stopRecording();
+              //     silenceStart = null; // Reset silence timer
+              // }
+
+              requestAnimationFrame(checkAudio);
+          };
+
+          checkAudio();
+      }
+
+
+      window.addEventListener("load", function () {
+        // monitorAudio();
+        const uploadButton = document.getElementById("uploadButton");
+        if (uploadButton) {
+          
+          uploadButton.addEventListener("click", stopUploading);
+          // Replace the setInterval with this conditional logic
+          function conditionalUpload() {
+              if (!statusTipReceived) {
+                  uploadFrame();
+              }
+          }
+          setInterval(conditionalUpload, 1000); 
+          
+          //setInterval(stopUploading, 180000); 
+          
+          setInterval(function() {
+            // Ensure there's a recent image to analyze
+            if (imageUrls.length > 0) {
+               if (!statusTipReceived) {
+                callOpenAIAPI(); // Now this should use the last image URL or a selection of URLs
+               }
+            }
+          }, 8000); // Call the OpenAI API every 8 seconds
+        } else {
+          console.error("Upload button not found");
+        }
+      });
+    </script>
+  </body>
+</html>
