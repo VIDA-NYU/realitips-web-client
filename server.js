@@ -7,7 +7,7 @@ const upload = multer({ storage: multer.memoryStorage() });
 const app = express();
 
 // Directly use your OpenAI API key here (replace with your actual key)
-const OPENAI_API_KEY = "sk-proj-w7r12pw7aTqriHoo0r99T3BlbkFJj0SMfCCsaHDatnFZMJYi";
+const OPENAI_API_KEY = "sk-XXX";
 
 app.use(express.static("public"));
 app.use(express.json()); // To parse JSON bodies
@@ -33,7 +33,7 @@ app.post("/upload", upload.single("audio"), async (req, res) => {
       {
         headers: {
           ...formData.getHeaders(),
-          Authorization: `Bearer sk-proj-w7r12pw7aTqriHoo0r99T3BlbkFJj0SMfCCsaHDatnFZMJYi`,
+          Authorization: `Bearer sk-XXX`,
         },
       }
     );
@@ -57,7 +57,7 @@ async function categorizeText(text) {
       },
       {
         headers: {
-          Authorization: `Bearer sk-proj-w7r12pw7aTqriHoo0r99T3BlbkFJj0SMfCCsaHDatnFZMJYi`,
+          Authorization: `Bearer sk-XXX`,
           "Content-Type": "application/json",
         },
       }
@@ -149,7 +149,7 @@ async function analyzeImageWithOpenAI(base64Image) {
       payload,
       {
         headers: {
-          Authorization: `Bearer sk-proj-w7r12pw7aTqriHoo0r99T3BlbkFJj0SMfCCsaHDatnFZMJYi`,
+          Authorization: `Bearer sk-XXX`,
           "Content-Type": "application/json",
         },
       }
